@@ -27,8 +27,13 @@ jobs:
         run: |
           pyinstaller --windowed --onefile --clean --name "BioOil_TAN_Analyzer" TAN_Calculator_1_0.py
 
+      - name: Zip the App Bundle (This preserves the Mac structure)
+        run: |
+          cd dist
+          zip -r ../BioOil_TAN_Analyzer_Mac.zip BioOil_TAN_Analyzer.app
+
       - name: Upload the finished App
         uses: actions/upload-artifact@v4
         with:
-          name: BioOil_TAN_Analyzer_Mac
-          path: dist/BioOil_TAN_Analyzer.app
+          name: BioOil_TAN_Analyzer_Mac_Package
+          path: BioOil_TAN_Analyzer_Mac.zip
