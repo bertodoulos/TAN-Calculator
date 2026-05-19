@@ -1,144 +1,168 @@
+"""
+=============================================================================
+BIO-OIL TAN TITRATION ANALYZER (Streamlit Version)
+=============================================================================
+Description:
+Processes potentiometric titration data to determine Carboxylic Acid Number 
+(CAN) and Total Acid Number (TAN) following NREL/TP-5100-65890 guidelines. 
+
+Assignment Logic:
+1. INFLECTION DETECTION: Endpoints are identified via the 2nd derivative 
+   zero-crossings of a cubic smoothing spline.
+2. NOISE FILTERING: Peaks in the positive mV range (electrode equilibration)
+   are discarded.
+3. CAN SELECTION: Assigned to the STRONGEST (highest 1st derivative) peak 
+   occurring above the user-defined mV Cutoff (e.g., > -400 mV).
+4. TAN SELECTION: Assigned to the FINAL valid peak occurring below the 
+   user-defined mV Cutoff (e.g., < -400 mV).
+=============================================================================
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 from scipy.interpolate import UnivariateSpline
-import io
 import re
 import datetime
+import io
 
-# --- WEB APP CONFIGURATION ---
-st.set_page_config(page_title="Bio-Oil TAN Analyzer", layout="wide")
-st.title("🧪 Bio-Oil TAN Titration Analyzer")
+st.set_page_config(page_title="TAN Analyzer v2", layout="wide")
 
-# --- THEORY & LOGIC SECTION ---
-with st.expander("ℹ️ Theory & Mathematical Logic"):
-    st.markdown("""
-    **1. CHEMICAL LOGIC & LITERATURE**
-    As defined in Skoog's *Fundamentals of Analytical Chemistry*, the equivalence point in potentiometry occurs at the maximum rate of change of potential per unit volume. Because potential (mV) is inversely proportional to pH (Nernst eq: E = E0 - 0.05916 * pH), adding base causes the mV to drop:
-    * The 1st derivative produces a negative peak.
-    * The 2nd derivative crosses zero from NEGATIVE to POSITIVE.
+st.title("Titration TAN Analyzer")
 
-    **2. MATHEMATICAL LOGIC (Smoothing & Splines)**
-    Raw data is noisy. To fix this:
-    * **Cubic Spline:** Fits a continuous mathematical equation to the data.
-    * **Smoothing (s):** Acts as a filter. Higher 's' ignores micro-noise.
-    * **Analytical Derivatives:** We calculate exact, smooth derivatives from the spline equation to pinpoint the stoichiometric endpoints.
-    """)
-
-# --- SIDEBAR: USER INPUTS ---
+# --- SIDEBAR PARAMETERS ---
 st.sidebar.header("Analysis Parameters")
-sample_id = st.sidebar.text_input("Sample Name (User ID):", "Sample_001")
-weight = st.sidebar.number_input("Sample Weight (W) [g]:", value=1.000, format="%.3f")
+
+sample_name = st.sidebar.text_input("Sample Name:", value="Sample_001")
+# Weight is initialized as None to prevent calculation without user input
+weight = st.sidebar.number_input("Sample Weight (W) [g]:", value=None, format="%.4f")
 blank_vol = st.sidebar.number_input("Blank Volume [mL]:", value=0.000, format="%.3f")
 molarity = st.sidebar.number_input("Titrant Molarity (M):", value=0.100, format="%.3f")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Detection Sensitivity")
-s_val = st.sidebar.number_input("Smoothing (s):", value=400)
-gate_val = st.sidebar.number_input("Slope Gate (%):", value=5.0)
+s_val = st.sidebar.number_input("Smoothing (s):", value=100)
+gate_val = st.sidebar.number_input("Slope Gate (%):", value=10.0)
+mv_cutoff = st.sidebar.number_input("mV Cutoff (CAN/TAN):", value=-400)
 
-# --- MAIN AREA: FILE UPLOAD & PROCESSING ---
-uploaded_file = st.file_uploader("Upload Titration CSV File", type=["csv"])
+# Max Volume Toggle
+use_max_vol = st.sidebar.checkbox("Enable Max Vol (mL)")
+max_vol_limit = 20.0
+if use_max_vol:
+    max_vol_limit = st.sidebar.number_input("Cutoff Volume:", value=20.0)
+
+# --- FILE UPLOAD ---
+uploaded_file = st.file_uploader("Choose a titration CSV file", type="csv")
 
 if uploaded_file is not None:
-    # 1. Load Data
-    df = pd.read_csv(uploaded_file)
-    v_col = [c for c in df.columns if 'Volume' in c][0]
-    mv_col = [c for c in df.columns if 'E' in c or 'mV' in c][0]
-    v_raw, mv_raw = df[v_col].values, df[mv_col].values
-    
-    # Sort data
-    idx = np.argsort(v_raw); v, mv = v_raw[idx], mv_raw[idx]
+    if weight is None or weight <= 0:
+        st.error("Please enter a valid Sample Weight to proceed.")
+    else:
+        try:
+            # 1. Load Data
+            df = pd.read_csv(uploaded_file)
+            v_col = [c for c in df.columns if 'Volume' in c][0]
+            mv_col = [c for c in df.columns if 'E' in c or 'mV' in c][0]
+            
+            v_raw, mv_raw = df[v_col].values, df[mv_col].values
+            idx = np.argsort(v_raw)
+            v, mv = v_raw[idx], mv_raw[idx]
+            
+            # Determine effective data range
+            max_v = max_vol_limit if use_max_vol else v.max()
 
-    # 2. Spline & Math
-    spline = UnivariateSpline(v, mv, k=3, s=s_val)
-    v_fine = np.linspace(v.min(), v.max(), 5000)
-    e_f, d1, d2 = spline(v_fine), spline.derivative(n=1)(v_fine), spline.derivative(n=2)(v_fine)
+            # 2. Mathematical Processing
+            spline = UnivariateSpline(v, mv, k=3, s=s_val)
+            v_fine = np.linspace(v.min(), v.max(), 5000)
+            e_f = spline(v_fine)
+            d1 = spline.derivative(n=1)(v_fine)
+            d2 = spline.derivative(n=2)(v_fine)
+            
+            # Calculate Gate relative to valid range
+            valid_d1 = d1[(v_fine > 0.1) & (v_fine <= max_v)]
+            max_slope = np.max(np.abs(valid_d1)) if len(valid_d1) > 0 else 1.0
 
-    crossings = []
-    for i in range(len(d2) - 1):
-        if d2[i] < 0 and d2[i+1] > 0:
-            x_zero = v_fine[i] - d2[i] * (v_fine[i+1] - v_fine[i]) / (d2[i+1] - d2[i])
-            crossings.append(x_zero)
+            # 3. Endpoint Identification
+            valid_eps = []
+            ep_counter = 1
+            for i in range(len(d2) - 1):
+                if d2[i] < 0 and d2[i+1] > 0:
+                    x_zero = v_fine[i] - d2[i] * (v_fine[i+1] - v_fine[i]) / (d2[i+1] - d2[i])
+                    strength = np.abs(spline.derivative(n=1)(x_zero))
+                    
+                    if 0.1 < x_zero <= max_v and strength > max_slope * (gate_val/100.0):
+                        mv_val = float(spline(x_zero))
+                        # Only accept peaks in negative potential region
+                        if mv_val < 0:
+                            an = (x_zero - blank_vol) * molarity * 56.1 / weight
+                            valid_eps.append({
+                                "ID": f"EP{ep_counter}",
+                                "Vol": x_zero,
+                                "mV": mv_val,
+                                "Strength": strength,
+                                "AN": an
+                            })
+                            ep_counter += 1
 
-    gate_decimal = gate_val / 100.0
-    max_slope = np.max(np.abs(d1[v_fine > 0.1]))
-    ep_vols = [x for x in crossings if x > 0.1 and np.abs(spline.derivative(n=1)(x)) > max_slope * gate_decimal]
+            # 4. Classification Logic
+            can_ep, tan_ep, max_can_s = None, None, -1
+            for ep in valid_eps:
+                if ep["mV"] >= mv_cutoff:
+                    if ep["Strength"] > max_can_s:
+                        max_can_s, can_ep = ep["Strength"], ep
+                else:
+                    tan_ep = ep
 
-    # 3. Results Table
-    results = []
-    for i, ve in enumerate(ep_vols):
-        an = (ve - blank_vol) * molarity * 56.1 / weight
-        mv_val = float(spline(ve))
-        results.append({"ID": f"EP{i+1}", "Vol (mL)": round(ve, 3), "mV": round(mv_val, 1), "AN (mg/g)": round(an, 2)})
-    
-    results_df = pd.DataFrame(results)
-    
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.subheader("Calculated Endpoints")
-        st.dataframe(results_df, use_container_width=True)
-    
-    # 4. Plotting
-    with col2:
-        st.subheader("Titration Curve & Derivatives")
-        fig, ax_e = plt.subplots(figsize=(8, 5))
-        fig.subplots_adjust(right=0.8)
-        ax1, ax2 = ax_e.twinx(), ax_e.twinx()
-        ax2.spines.right.set_position(("axes", 1.15))
+            # --- DISPLAY RESULTS ---
+            col1, col2 = st.columns([2, 1])
 
-        ax_e.plot(v, mv, 'k.', alpha=0.15)
-        ax_e.plot(v_fine, e_f, 'k-', lw=1.5)
-        ax1.plot(v_fine, d1, 'r-', alpha=0.5)
-        ax2.plot(v_fine, d2, 'b-', alpha=0.3)
-        ax2.axhline(0, color='gray', linestyle='--', alpha=0.3)
+            with col1:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax_d1 = ax.twinx()
+                ax_d2 = ax.twinx()
+                ax_d2.spines.right.set_position(("axes", 1.12))
 
-        for i, ve in enumerate(ep_vols):
-            ax_e.axvline(ve, color='magenta', linestyle=':')
-            ax_e.text(ve, ax_e.get_ylim()[1], f' EP{i+1}', rotation=90, color='magenta', fontweight='bold', va='top')
+                ax.plot(v, mv, 'k.', alpha=0.1, label="Raw Data")
+                ax.plot(v_fine, e_f, 'k-', lw=1.5, label="Spline")
+                ax_d1.plot(v_fine, d1, 'r-', alpha=0.4, label="1st Deriv")
+                ax_d2.plot(v_fine, d2, 'b-', alpha=0.2, label="2nd Deriv")
+                
+                ax.axhline(mv_cutoff, color='orange', ls='--', alpha=0.6)
+                if use_max_vol:
+                    ax.axvline(max_v, color='red', ls='--', alpha=0.5)
 
-        ax_e.set_xlabel("Volume (mL)"); ax_e.set_ylabel("mV")
-        ax1.set_ylabel("1st Deriv", color='r'); ax2.set_ylabel("2nd Deriv", color='b')
-        st.pyplot(fig)
+                for ep in valid_eps:
+                    ax.axvline(ep["Vol"], color='magenta', ls=':', alpha=0.8)
+                    lbl = f' {ep["ID"]}'
+                    if ep == can_ep: lbl += " (CAN)"
+                    if ep == tan_ep: lbl += " (TAN)"
+                    ax.text(ep["Vol"], ax.get_ylim()[1], lbl, rotation=90, weight='bold', color='magenta', va='top')
 
-    # 5. PDF Generation (In-Memory)
-    buffer = io.BytesIO()
-    with PdfPages(buffer) as pdf:
-        fig_pdf = plt.figure(figsize=(8.27, 11.69))
-        ax_rep = fig_pdf.add_axes([0.10, 0.58, 0.62, 0.32])
-        
-        ax_rep_1, ax_rep_2 = ax_rep.twinx(), ax_rep.twinx()
-        ax_rep_2.spines.right.set_position(("axes", 1.15))
-        ax_rep.plot(v, mv, 'k.', alpha=0.15); ax_rep.plot(v_fine, e_f, 'k-', lw=1.5)
-        ax_rep_1.plot(v_fine, d1, 'r-', alpha=0.5); ax_rep_2.plot(v_fine, d2, 'b-', alpha=0.3)
-        ax_rep_2.axhline(0, color='gray', linestyle='--', alpha=0.3)
-        for i, ve in enumerate(ep_vols):
-            ax_rep.axvline(ve, color='magenta', linestyle=':')
-            ax_rep.text(ve, ax_rep.get_ylim()[1], f' EP{i+1}', rotation=90, color='magenta', fontweight='bold', va='top')
-        
-        ax_rep.set_title(f"TITRATION ANALYSIS: {sample_id}", pad=25, fontweight='bold')
-        meta = (f"SOURCE DATA: {uploaded_file.name}\n"
-                f"REPORT DATE: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-                f"WEIGHT: {weight} g | BLANK: {blank_vol} mL\n"
-                f"SMOOTHING: {s_val} | GATE: {gate_val}%")
-        plt.figtext(0.10, 0.52, meta, fontsize=10, family='monospace', va='top')
+                ax.set_xlabel("Volume (mL)")
+                ax.set_ylabel("mV")
+                ax_d1.set_ylabel("1st Deriv (Slope)", color='r')
+                ax_d2.set_ylabel("2nd Deriv", color='b')
+                st.pyplot(fig)
 
-        ax_tab = fig_pdf.add_axes([0.1, 0.1, 0.8, 0.3]); ax_tab.axis('off')
-        if not results_df.empty:
-            tab = ax_tab.table(cellText=results_df.values, colLabels=results_df.columns, loc='center', cellLoc='center')
-            tab.auto_set_font_size(False); tab.set_fontsize(10); tab.scale(1, 2.5)
+            with col2:
+                st.subheader("Detected Endpoints")
+                table_data = []
+                for ep in valid_eps:
+                    assign = "CAN" if ep == can_ep else ("TAN" if ep == tan_ep else "")
+                    table_data.append({
+                        "ID": ep["ID"],
+                        "Vol": round(ep["Vol"], 3),
+                        "mV": round(ep["mV"], 1),
+                        "mg/g": round(ep["AN"], 2),
+                        "Class": assign
+                    })
+                st.table(pd.DataFrame(table_data))
+                
+                if can_ep:
+                    st.success(f"**Final CAN:** {can_ep['AN']:.2f} mg KOH/g")
+                if tan_ep:
+                    st.info(f"**Final TAN:** {tan_ep['AN']:.2f} mg KOH/g")
 
-        pdf.savefig(fig_pdf); plt.close(fig_pdf)
-    
-    buffer.seek(0)
-    
-    # 6. Download Button
-    st.markdown("---")
-    st.download_button(
-        label="📄 Download PDF Report",
-        data=buffer,
-        file_name=f"{sample_id}_Report.pdf",
-        mime="application/pdf"
-    )
+        except Exception as e:
+            st.error(f"Error processing data: {e}")
