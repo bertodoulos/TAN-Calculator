@@ -31,6 +31,21 @@ st.set_page_config(page_title="TAN Analyzer v2", layout="wide")
 
 st.title("Titration TAN Analyzer")
 
+with st.expander("ℹ️ Theory & Logic"):
+    st.markdown("""
+    **1. CHEMICAL LOGIC**
+    Equivalence points occur at the maximum rate of change of potential. Because potential (mV) drops as pH rises, the 1st derivative is a negative peak and the 2nd derivative crosses zero from NEGATIVE to POSITIVE.
+
+    **2. CLASSIFICATION LOGIC**
+    Bio-oils contain a spectrum of acids. Following NREL LAP guidelines:
+    * **CARBOXYLIC WINDOW:** Potentials above the specified Cutoff (e.g. > -400 mV).
+    * **PHENOLIC WINDOW:** Potentials below the specified Cutoff (e.g. < -400 mV).
+
+    **3. AUTOMATED ASSIGNMENT**
+    * **CAN (Carboxylic Acid Number):** Assigned to the STRONGEST (steepest) peak within the Carboxylic window to ensure the most well-defined carboxylic point is used.
+    * **TAN (Total Acid Number):** Assigned to the FINAL peak in the Phenolic window, representing the cumulative neutralization of all acidic species.
+    """)
+
 # --- SIDEBAR PARAMETERS ---
 st.sidebar.header("Analysis Parameters")
 
