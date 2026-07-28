@@ -48,6 +48,21 @@ with st.expander("ℹ️ Theory & Logic"):
 # --- SIDEBAR PARAMETERS ---
 st.sidebar.header("Analysis Parameters")
 
+with st.sidebar.expander("ℹ️ Theory & Logic"):
+    st.markdown("""
+    **1. CHEMICAL LOGIC**
+    Equivalence points occur at the maximum rate of change of potential. Because potential (mV) drops as pH rises, the 1st derivative is a negative peak and the 2nd derivative crosses zero from NEGATIVE to POSITIVE.
+
+    **2. CLASSIFICATION LOGIC**
+    Bio-oils contain a spectrum of acids. Following NREL LAP guidelines:
+    * **CARBOXYLIC WINDOW:** Captures aliphatic and multifunctional carboxylic acids (+150 to -320 mV).
+    * **PHENOLIC WINDOW:** Captures weak and sterically hindered phenolic groups (-350 to -480 mV).
+
+    **3. AUTOMATED ASSIGNMENT**
+    * **CAN (Carboxylic Acid Number):** Assigned to the STRONGEST (steepest) peak within the Carboxylic window to ensure the most well-defined carboxylic point is used. Features a Smart Fallback to capture strong early peaks if they exceed the CAN ceiling.
+    * **TAN (Total Acid Number):** Assigned to the FINAL peak in the Phenolic window, representing the cumulative neutralization of all acidic species.
+    """)
+
 sample_name = st.sidebar.text_input("Sample Name:", value="Sample_001")
 weight = st.sidebar.number_input("Sample Weight (W) [g]:", value=None, format="%.4f")
 blank_vol = st.sidebar.number_input("Blank Volume [mL]:", value=0.000, format="%.3f")
