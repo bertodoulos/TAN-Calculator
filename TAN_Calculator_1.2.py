@@ -25,6 +25,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import UnivariateSpline
 import os
+import io
+from matplotlib.backends.backend_pdf import PdfPages
 
 st.set_page_config(page_title="TAN Analyzer v2", layout="wide")
 
@@ -101,6 +103,55 @@ can_max = st.sidebar.number_input("CAN Max mV:", value=150.0, disabled=not unloc
 can_min = st.sidebar.number_input("CAN Min mV:", value=-320.0, disabled=not unlock_win)
 tan_max = st.sidebar.number_input("TAN Max mV:", value=-350.0, disabled=not unlock_win)
 tan_min = st.sidebar.number_input("TAN Min mV:", value=-480.0, disabled=not unlock_win)
+
+# --- HELPER FUNCTION: PDF GENERATOR ---
+def create_pdf(v, mv, v_f, e_f, d1, d2, valid_eps, can_ep, tan_ep, max_vol, can_bounds, tan_bounds, meta_text, table_rows):
+    pdf_buffer = io.BytesIO()
+    with PdfPages(pdf_buffer) as pdf:
+        fig_pdf = plt.figure(figsize=(8.27, 11.69))
+        ax_rep = fig_pdf.add_axes([0.10, 0.58, 0.62, 0.32])
+        
+        ax1, ax2 = ax_rep.twinx(), ax_rep.twinx()
+        ax2.spines.right.set_position(("axes", 1.15))
+        
+        ax_rep.plot(v, mv, 'k.', alpha=0.1)
+        ax_rep.plot(v_f, e_f, 'k-', lw=1.5)
+        ax1.plot(v_f, d1, 'r-', alpha=0.5)
+        ax2.plot(v_f, d2, 'b-', alpha=0.3)
+        ax2.axhline(0, color='gray', linestyle='--', alpha=0.3)
+        
+        ax_rep.axhspan(can_bounds[0], can_bounds[1], color='green', alpha=0.1, label='CAN Window')
+        ax_rep.axhspan(tan_bounds[0], tan_bounds[1], color='orange', alpha=0.1, label='TAN Window')
+        
+        if max_vol and max_vol < v.max(): 
+            ax_rep.axvline(max_vol, color='red', ls='--', alpha=0.5)
+            
+        for ep in valid_eps:
+            ax_rep.axvline(ep["Vol"], color='magenta', ls=':')
+            lbl = f' {ep["ID"]}' + (" (CAN)" if ep == can_ep else (" (TAN)" if ep == tan_ep else ""))
+            ax_rep.text(ep["Vol"], ax_rep.get_ylim()[1], lbl, rotation=90, color='magenta', weight='bold', va='top')
+            
+        ax_rep.set_ylabel("mV")
+        ax1.set_ylabel("1st Deriv", color='r')
+        ax2.set_ylabel("2nd Deriv", color='b')
+        ax_rep.set_xlabel("Volume (mL)")
+        
+        plt.figtext(0.10, 0.52, meta_text, fontsize=10, family='monospace', va='top')
+        
+        ax_tab = fig_pdf.add_axes([0.1, 0.1, 0.8, 0.3])
+        ax_tab.axis('off')
+        
+        pdf_table_data = [["ID", "Vol (mL)", "mV", "AN (mg/g)", "Class"]] + table_rows
+        tab = ax_tab.table(cellText=pdf_table_data, loc='center', cellLoc='center')
+        tab.auto_set_font_size(False)
+        tab.set_fontsize(10)
+        tab.scale(1, 2.0)
+        
+        pdf.savefig(fig_pdf)
+        plt.close(fig_pdf)
+    
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
 
 # --- FILE UPLOAD ---
@@ -224,8 +275,11 @@ if uploaded_file is not None:
             with col2:
                 st.subheader("Detected Endpoints")
                 table_data = []
+                pdf_table_rows = []
+                
                 for ep in valid_eps:
                     assign = "CAN" if ep == can_ep else ("TAN" if ep == tan_ep else "")
+                    
                     table_data.append({
                         "ID": ep["ID"],
                         "Vol": f'{ep["Vol"]:.3f}',
@@ -233,6 +287,15 @@ if uploaded_file is not None:
                         "mg/g": f'{ep["AN"]:.2f}',
                         "Class": assign
                     })
+                    
+                    pdf_table_rows.append([
+                        ep["ID"], 
+                        f'{ep["Vol"]:.3f}', 
+                        f'{ep["mV"]:.1f}', 
+                        f'{ep["AN"]:.2f}', 
+                        assign
+                    ])
+                    
                 if table_data:
                     st.table(pd.DataFrame(table_data))
                 else:
@@ -243,6 +306,26 @@ if uploaded_file is not None:
                     st.success(f"**Final CAN:** {can_ep['AN']:.2f} mg KOH/g{fallback_txt}")
                 if tan_ep:
                     st.info(f"**Final TAN:** {tan_ep['AN']:.2f} mg KOH/g")
+
+                # --- PDF EXPORT BUTTON ---
+                st.markdown("---")
+                fallback_note = "\n*[SMART FALLBACK USED FOR CAN]*" if (can_ep and can_ep['mV'] > can_max) else ""
+                meta_string = f"SOURCE: {uploaded_file.name}\nWEIGHT: {weight} g | BLANK: {blank_vol} mL\nMODE: {sens_mode} | START VOLUME: {start_vol} mL | MAX VOL: {max_v} {fallback_note}"
+                
+                pdf_bytes = create_pdf(
+                    v, mv, v_fine, e_f, d1, d2, 
+                    valid_eps, can_ep, tan_ep, max_v, 
+                    (can_min, can_max), (tan_min, tan_max), 
+                    meta_string, pdf_table_rows
+                )
+                
+                st.download_button(
+                    label="📥 Export PDF Report",
+                    data=pdf_bytes,
+                    file_name=f"{sample_name}_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
 
         except Exception as e:
             st.error(f"Error processing data: {e}")
